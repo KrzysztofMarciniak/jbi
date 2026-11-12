@@ -28,14 +28,17 @@ all: jbi libjbi.a libjbi.$(SOEXT)
 jbi.o: jbi.c jbi.h
 	$(CC) $(CFLAGS) -c -o $@ jbi.c
 
+auto.o: jbi_auto.c jbi.h
+	$(CC) $(CFLAGS) -c -o $@ jbi_auto.c
+
 main.o: main.c jbi.h
 	$(CC) $(CFLAGS) -c -o $@ main.c
 
-libjbi.a: jbi.o
-	$(AR) rcs $@ jbi.o
+libjbi.a: jbi.o auto.o
+	$(AR) rcs $@ jbi.o auto.o
 
-libjbi.$(SOEXT): jbi.o
-	$(CC) $(SOFLAGS) -pthread -o $@ jbi.o
+libjbi.$(SOEXT): jbi.o auto.o
+	$(CC) $(SOFLAGS) -pthread -o $@ jbi.o auto.o
 
 jbi: main.o libjbi.a
 	$(CC) -pthread -o $@ main.o libjbi.a

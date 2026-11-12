@@ -17,6 +17,7 @@ in project documentation, and tries configured build commands until one succeeds
 - Stable ranking by documentation evidence, marker-file evidence, then configured
   `order` (lower values are tried first).
 - Fallback attempts across all configured build systems.
+- Heuristic C99/C++ autobuild when no configured build system succeeds, including recursive Git submodule initialization, local include discovery, and dependency-flag guessing from system include paths.
 - Build-system-specific install/uninstall commands; the successful build system is
   recorded in `.jbi/state` so later lifecycle commands use the same configuration.
 - Dry-run mode and an inspection command (`list`).
@@ -47,7 +48,8 @@ jbi [build|install|uninstall|list] [-n] [-C directory]
 `jbi` searches for configuration files in `PROJECT/.jbi/` first and then in the
 system configuration directory. The system directory defaults to
 `/usr/local/share/jbi`; set `JBI_SHAREDIR` in the environment to override it at
-runtime.
+runtime. The `build` command can also run with no configuration files installed: it
+will proceed directly to the C/C++ autobuilder.
 
 ## Configuration format
 
@@ -75,8 +77,15 @@ one command. Project-local configurations with the same filename stem override
 system configurations.
 
 The bundled configurations cover shell scripts, CMake, Meson, Autoconf, Make,
-Cargo, and Go. Add a `.jbi/NAME.jbi` file to support another build system or to
-customize a project's commands.
+Cargo, and Go. If none of them builds the project, jbi scans C/C++ sources and
+tries a zero-configuration build. It detects `main()` (or creates a static
+archive when no entry point exists), discovers project include directories, and
+uses `pkg-config` or guessed `-lNAME` flags for external headers. For example,
+`#include <yaml-cpp/yaml.h>` leads it to try `-lyaml-cpp` by deriving the
+library candidate from the include directory; no per-library mapping is needed.
+Set `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `AR`, and `TMPDIR` to customize
+the automatic build. Add a `.jbi/NAME.jbi` file to support another build system or
+to customize a project's commands.
 
 ## Install
 
