@@ -33,7 +33,7 @@ typedef struct {
         jbi_ctx* ctx;
         source* src;
         int nsrc, csrc, nfiles, cxx;
-        jbi_list headers, incdirs, sysheaders, cflags, ldflags, subdirs;
+        jbi_list headers, incdirs, sysheaders, cflags, ldflags, subdirs, artifacts;
         char probe[AUTO_PATH];
         const char* probe_cc;
         const char *probe_flags, *probe_cppflags;
@@ -305,12 +305,26 @@ static void walk(autobuild* a, const char* rel, int depth) {
 
 static void strip_comments(const char* in, char* out, int* block) {
         size_t o = 0;
+        char q   = 0; /* inside a string or character literal */
         for (size_t i = 0; in[i]; i++) {
                 if (*block) {
                         if (in[i] == '*' && in[i + 1] == '/') {
                                 *block = 0;
                                 i++;
                         }
+                        continue;
+                }
+                if (q) {
+                        out[o++] = in[i];
+                        if (in[i] == '\\' && in[i + 1])
+                                out[o++] = in[++i];
+                        else if (in[i] == q)
+                                q = 0;
+                        continue;
+                }
+                if (in[i] == '"' || in[i] == '\'') {
+                        q        = in[i];
+                        out[o++] = in[i];
                         continue;
                 }
                 if (in[i] == '/' && in[i + 1] == '*') {
@@ -344,7 +358,7 @@ static int parse_include(const char* s, char* out, size_t n) {
         while (*s && *s != end && k + 1 < n) out[k++] = *s++;
         if (*s != end || !k) return 0;
         out[k] = 0;
-        return 1;
+        return end == '>' ? 1 : 2;
 }
 
 static int has_main_line(const char* s) {
@@ -364,12 +378,19 @@ static int has_main_line(const char* s) {
                         if (b > s && (isalnum((unsigned char)b[-1]) ||
                                       b[-1] == '_' || b[-1] == '*'))
                                 return 1;
+                        if (b == s) { /* "int\nmain (...)": type on prior line */
+                                const char* e = s + strlen(s);
+                                while (e > s && isspace((unsigned char)e[-1]))
+                                        e--;
+                                if (e > s && e[-1] != ';') return 1;
+                        }
                 }
         }
         return 0;
 }
 
-static void note_include(autobuild* a, const char* from, const char* name) {
+static void note_include(autobuild* a, const char* from, const char* name,
+                         int quoted) {
         char local[AUTO_PATH], d[AUTO_PATH];
         const char* slash = strrchr(from, '/');
         snprintf(local, sizeof local, "%.*s%s%s",
@@ -390,7 +411,8 @@ static void note_include(autobuild* a, const char* from, const char* name) {
                         return;
                 }
         }
-        if (name[0] != '.' && name[0] != '/') add_unique(&a->sysheaders, name);
+        if (!quoted && name[0] != '.' && name[0] != '/')
+                add_unique(&a->sysheaders, name);
 }
 
 static void scan_file(autobuild* a, const char* rel, int* mainfn) {
@@ -405,8 +427,9 @@ static void scan_file(autobuild* a, const char* rel, int* mainfn) {
                 total += (long)strlen(line);
                 if (total > 4000000L) break;
                 strip_comments(line, clean, &block);
-                if (parse_include(clean, inc, sizeof inc))
-                        note_include(a, rel, inc);
+                int inck = parse_include(clean, inc, sizeof inc);
+                if (inck)
+                        note_include(a, rel, inc, inck == 2);
                 else if (mainfn && !*mainfn && has_main_line(clean))
                         *mainfn = 1;
         }
@@ -710,19 +733,36 @@ static void flatten(const char* p, char* o, size_t n) {
         o[k] = 0;
 }
 
+static void add_artifact(autobuild* a, const char* kind, const char* src,
+                         const char* dst) {
+        strbuf b = {0};
+        cat(&b, kind);
+        cat(&b, "\t");
+        cat(&b, src);
+        if (dst) {
+                cat(&b, "\t");
+                cat(&b, dst);
+        }
+        list_add(&a->artifacts, b.s);
+        free(b.s);
+}
+
+static void proj_name(const jbi_ctx* c, char* name, size_t n) {
+        const char* slash = strrchr(c->dir, '/');
+        snprintf(name, n, "%s", slash && slash[1] ? slash + 1 : "a.out");
+}
+
 static int compile_link(autobuild* a) {
         const char *cc = env_or("CC", "cc"), *cxx = env_or("CXX", "c++"),
                    *cf  = env_or("CFLAGS", "-O2"),
                    *xf  = env_or("CXXFLAGS", "-O2"),
                    *pp  = env_or("CPPFLAGS", "");
         const char *ldf = getenv("LDFLAGS"), *ar = env_or("AR", "ar");
-        jbi_list objs = {0};
+        jbi_list objs = {0}, outs = {0};
         char out[AUTO_PATH], name[256];
-        const char* slash = strrchr(a->ctx->dir, '/');
-        int mains = 0, rc = -1;
+        int mains = 0, linked = 0, rc = -1;
         strbuf b = {0};
-        snprintf(name, sizeof name, "%s",
-                 slash && slash[1] ? slash + 1 : "a.out");
+        proj_name(a->ctx, name, sizeof name);
         if (!run(a->ctx, "mkdir -p build/obj")) goto done;
         for (int i = 0; i < a->nsrc; i++) {
                 char flat[AUTO_PATH], obj[AUTO_PATH], leaf[AUTO_PATH];
@@ -762,6 +802,7 @@ static int compile_link(autobuild* a) {
                 }
                 if (!runbuf(a->ctx, &b)) goto done;
                 printf("[jbi] auto: no main() found, built %s\n", out);
+                add_artifact(a, "lib", out, NULL);
                 rc = 0;
                 goto done;
         }
@@ -783,7 +824,15 @@ static int compile_link(autobuild* a) {
                                         memcpy(out + 6, base, n);
                                         out[6 + n] = 0;
                                 }
+                                if (has(&outs, out)) { /* same basename twice */
+                                        char flat[AUTO_PATH - 16];
+                                        flatten(a->src[m].path, flat,
+                                                sizeof flat);
+                                        snprintf(out, sizeof out, "build/%s",
+                                                 flat);
+                                }
                         }
+                        list_add(&outs, out);
                         cat(&b, a->cxx ? cxx : cc);
                         cat(&b, " -o ");
                         quote(&b, out);
@@ -803,14 +852,17 @@ static int compile_link(autobuild* a) {
                         if (!runbuf(a->ctx, &b)) {
                                 fprintf(stderr,
                                         "jbi: auto: link failed for %s\n", out);
-                                goto done;
+                                continue;
                         }
                         printf("[jbi] auto: built %s\n", out);
-                        rc = 0;
+                        add_artifact(a, "bin", out, NULL);
+                        linked++;
                 }
+        if (linked) rc = 0;
 done:
         free(b.s);
         list_free(&objs);
+        list_free(&outs);
         return rc;
 }
 
@@ -823,6 +875,7 @@ static void cleanup(autobuild* a) {
         list_free(&a->cflags);
         list_free(&a->ldflags);
         list_free(&a->subdirs);
+        list_free(&a->artifacts);
         if (a->probe[0]) {
                 strbuf b = {0};
                 cat(&b, "rm -rf ");
@@ -830,6 +883,197 @@ static void cleanup(autobuild* a) {
                 (void)shell_ok(b.s);
                 free(b.s);
         }
+}
+
+
+static int write_manifest(const jbi_ctx* c, const char* file,
+                          const jbi_list* l) {
+        char p[AUTO_PATH];
+        FILE* f;
+        snprintf(p, sizeof p, "%s/.jbi", c->dir);
+        mkdir(p, 0755);
+        snprintf(p, sizeof p, "%s/.jbi/%s", c->dir, file);
+        f = fopen(p, "w");
+        if (!f) return 0;
+        for (int i = 0; i < l->n; i++) fprintf(f, "%s\n", l->v[i]);
+        return fclose(f) == 0;
+}
+
+static int read_manifest(const jbi_ctx* c, const char* file, jbi_list* l) {
+        char p[AUTO_PATH], line[2 * AUTO_PATH];
+        FILE* f;
+        snprintf(p, sizeof p, "%s/.jbi/%s", c->dir, file);
+        f = fopen(p, "r");
+        if (!f) return 0;
+        while (fgets(line, sizeof line, f)) {
+                line[strcspn(line, "\r\n")] = 0;
+                if (*line) list_add(l, line);
+        }
+        fclose(f);
+        return l->n > 0;
+}
+
+/* Libraries (no main) install their public headers: everything under
+   include/ keeps its path below it (include/foo/a.h -> INCDIR/foo/a.h, a bare
+   include/a.h -> INCDIR/NAME/a.h); without include/, top-level headers go to
+   INCDIR/NAME/. */
+static void collect_headers(autobuild* a, const char* name) {
+        for (int i = 0; i < a->headers.n; i++) {
+                const char* h = a->headers.v[i];
+                char dst[AUTO_PATH];
+                if (!strncmp(h, "include/", 8)) {
+                        if (strchr(h + 8, '/'))
+                                snprintf(dst, sizeof dst, "%s", h + 8);
+                        else
+                                snprintf(dst, sizeof dst, "%s/%s", name, h + 8);
+                } else if (!strchr(h, '/'))
+                        snprintf(dst, sizeof dst, "%s/%s", name, h);
+                else
+                        continue;
+                add_artifact(a, "inc", h, dst);
+        }
+}
+
+static void inst_dir(char* out, size_t n, const char* var, const char* sub) {
+        const char* dd = env_or("DESTDIR", "");
+        const char* v  = getenv(var);
+        if (v && *v)
+                snprintf(out, n, "%s%s", dd, v);
+        else
+                snprintf(out, n, "%s%s/%s", dd, env_or("PREFIX", "/usr/local"),
+                         sub);
+}
+
+int jbi_auto_install(jbi_ctx* c) {
+        jbi_list m = {0}, done = {0};
+        char bin[AUTO_PATH], lib[AUTO_PATH], inc[AUTO_PATH];
+        int rc = -1;
+        if (!read_manifest(c, "auto.build", &m)) {
+                fputs("jbi: auto: nothing to install (run jbi build first)\n",
+                      stderr);
+                goto out;
+        }
+        inst_dir(bin, sizeof bin, "BINDIR", "bin");
+        inst_dir(lib, sizeof lib, "LIBDIR", "lib");
+        inst_dir(inc, sizeof inc, "INCDIR", "include");
+        for (int i = 0; i < m.n; i++) {
+                char *e = a_strdup(m.v[i]), *kind = e, *src, *dst = NULL;
+                char p[AUTO_PATH], d[AUTO_PATH];
+                const char *base, *mode = "644", *root;
+                strbuf b = {0};
+                int ok;
+                src = strchr(e, '\t');
+                if (!src) {
+                        free(e);
+                        continue;
+                }
+                *src++ = 0;
+                if (!strcmp(kind, "inc")) {
+                        dst = strchr(src, '\t');
+                        if (!dst) {
+                                free(e);
+                                continue;
+                        }
+                        *dst++ = 0;
+                        root   = inc;
+                } else {
+                        base = strrchr(src, '/');
+                        dst  = (char*)(base ? base + 1 : src);
+                        root = !strcmp(kind, "bin") ? bin : lib;
+                        if (!strcmp(kind, "bin")) mode = "755";
+                }
+                if (!path_join(p, sizeof p, root, dst)) {
+                        free(e);
+                        goto out;
+                }
+                snprintf(d, sizeof d, "%s", p);
+                *strrchr(d, '/') = 0;
+                cat(&b, "install -d ");
+                quote(&b, d);
+                cat(&b, " && install -m ");
+                cat(&b, mode);
+                cat(&b, " ");
+                quote(&b, src);
+                cat(&b, " ");
+                quote(&b, p);
+                ok = runbuf(c, &b);
+                free(e);
+                if (!ok) {
+                        fprintf(stderr, "jbi: auto: install failed for %s\n", p);
+                        goto out;
+                }
+                add_unique(&done, p);
+        }
+        if (!c->dry && !write_manifest(c, "auto.installed", &done))
+                fputs("jbi: warning: cannot record installed files\n", stderr);
+        rc = 0;
+out:
+        list_free(&m);
+        list_free(&done);
+        return rc;
+}
+
+int jbi_auto_uninstall(jbi_ctx* c) {
+        jbi_list m = {0}, dirs = {0};
+        char bin[AUTO_PATH], lib[AUTO_PATH], inc[AUTO_PATH], name[256];
+        char p[AUTO_PATH];
+        strbuf b = {0};
+        int rc = -1;
+        inst_dir(bin, sizeof bin, "BINDIR", "bin");
+        inst_dir(lib, sizeof lib, "LIBDIR", "lib");
+        inst_dir(inc, sizeof inc, "INCDIR", "include");
+        proj_name(c, name, sizeof name);
+        if (read_manifest(c, "auto.installed", &m)) {
+                size_t il = strlen(inc);
+                cat(&b, "rm -f");
+                for (int i = 0; i < m.n; i++) {
+                        cat(&b, " ");
+                        quote(&b, m.v[i]);
+                        if (!strncmp(m.v[i], inc, il) && m.v[i][il] == '/') {
+                                char* sl;
+                                snprintf(p, sizeof p, "%s", m.v[i]);
+                                while ((sl = strrchr(p, '/')) &&
+                                       (size_t)(sl - p) > il) {
+                                        *sl = 0;
+                                        add_unique(&dirs, p);
+                                }
+                        }
+                }
+        } else {
+                if (!safe_name(name) || !strcmp(name, ".") ||
+                    !strcmp(name, "..")) {
+                        fputs("jbi: auto: unsafe project name\n", stderr);
+                        goto out;
+                }
+                char leaf[300];
+                snprintf(leaf, sizeof leaf, "lib%s.a", name);
+                cat(&b, "rm -f ");
+                if (!path_join(p, sizeof p, bin, name)) goto out;
+                quote(&b, p);
+                cat(&b, " ");
+                if (!path_join(p, sizeof p, lib, leaf)) goto out;
+                quote(&b, p);
+                cat(&b, " && rm -rf ");
+                if (!path_join(p, sizeof p, inc, name)) goto out;
+                quote(&b, p);
+        }
+        if (!runbuf(c, &b)) goto out;
+        for (int i = 0; i < dirs.n; i++) { /* deepest first, best effort */
+                cat(&b, "rmdir ");
+                quote(&b, dirs.v[i]);
+                cat(&b, " 2>/dev/null; true");
+                (void)runbuf(c, &b);
+        }
+        if (!c->dry) {
+                snprintf(p, sizeof p, "%s/.jbi/auto.installed", c->dir);
+                (void)unlink(p);
+        }
+        rc = 0;
+out:
+        free(b.s);
+        list_free(&m);
+        list_free(&dirs);
+        return rc;
 }
 
 int jbi_autobuild(jbi_ctx* ctx) {
@@ -848,7 +1092,10 @@ int jbi_autobuild(jbi_ctx* ctx) {
         }
         if (!init_submodules(&a)) goto done;
         walk(&a, "", 0);
-        if (!a.nsrc) goto done;
+        if (!a.nsrc) {
+                fputs("jbi: auto: no C/C++ sources found\n", stderr);
+                goto done;
+        }
         for (int i = 0; i < a.nsrc; i++) {
                 scan_file(&a, a.src[i].path, &a.src[i].mainfn);
                 if (a.src[i].cxx) a.cxx = 1;
@@ -889,6 +1136,15 @@ int jbi_autobuild(jbi_ctx* ctx) {
         for (int i = 0; i < a.sysheaders.n; i++)
                 resolve_header(&a, a.sysheaders.v[i]);
         rc = compile_link(&a);
+        if (rc == 0) {
+                char name[256];
+                proj_name(ctx, name, sizeof name);
+                if (a.artifacts.n && !strncmp(a.artifacts.v[0], "lib\t", 4))
+                        collect_headers(&a, name);
+                if (!write_manifest(ctx, "auto.build", &a.artifacts))
+                        fputs("jbi: warning: cannot record build artifacts\n",
+                              stderr);
+        }
 done:
         cleanup(&a);
         return rc;

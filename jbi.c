@@ -448,6 +448,12 @@ int jbi_build(jbi_ctx* c) {
                     "[jbi] no configured build system succeeded; trying C/C++ "
                     "autobuild");
                 rc = jbi_autobuild(c);
+                if (rc == 0 && !c->dry) {
+                        jbi_cfg g;
+                        memset(&g, 0, sizeof g);
+                        snprintf(g.name, sizeof g.name, "auto");
+                        save_state(c, &g, "jbi auto-install");
+                }
         }
         return rc;
 }
@@ -460,6 +466,14 @@ static int phase(jbi_ctx* c, int uninstall) {
         r = rank(c);
         if (load_state(c, st,
                        sizeof st)) { /* built by jbi: use that system only */
+                if (!strcmp(st, "auto")) { /* heuristic C/C++ build */
+                        puts("[jbi] auto");
+                        rc = uninstall ? jbi_auto_uninstall(c)
+                                       : jbi_auto_install(c);
+                        if (rc == 0 && uninstall && !c->dry) clear_state(c);
+                        free(r);
+                        return rc;
+                }
                 for (int i = 0; i < c->ncfg; i++) {
                         jbi_cfg* g = &c->cfg[i];
                         const jbi_list* l =
@@ -488,6 +502,15 @@ static int phase(jbi_ctx* c, int uninstall) {
                 if (try_list(c, g, l, 0)) rc = 0;
         }
         free(r);
+        if (rc != 0) { /* built by the autobuilder before state was saved */
+                char mp[8192];
+                snprintf(mp, sizeof mp, "%s/.jbi/auto.build", c->dir);
+                if (access(mp, F_OK) == 0) {
+                        puts("[jbi] auto");
+                        return uninstall ? jbi_auto_uninstall(c)
+                                         : jbi_auto_install(c);
+                }
+        }
         if (rc != 0) fprintf(stderr, "jbi: no %s command worked\n", what);
         return rc;
 }
@@ -518,20 +541,24 @@ void jbi_list_plan(jbi_ctx* c, FILE* out) {
 }
 
 int jbi_init_submodules(jbi_ctx* c) {
-        char path[PATH_MAX];
+        char path[4096 + 32];
+        struct stat st;
 
-        snprintf(path, sizeof(path), "%s/.gitmodules", c->dir);
-
+        snprintf(path, sizeof path, "%s/.gitmodules", c->dir);
         if (access(path, F_OK) != 0) return 0;
 
-        printf("[jbi] Git submodules detected\n");
-
-        if (c->dry) {
-                puts("[jbi] would run: git submodule update --init");
+        snprintf(path, sizeof path, "%s/.git", c->dir);
+        if (stat(path, &st) != 0) {
+                fputs("jbi: .gitmodules found but this is not a git checkout; "
+                      "skipping submodules\n",
+                      stderr);
                 return 0;
         }
 
-        puts("[jbi] initializing Git submodules...");
-
-        return system("git submodule update --init");
+        puts("[jbi] Git submodules detected");
+        /* run_cmd runs in the project dir and only prints under --dry-run */
+        if (!run_cmd(c, "git submodule update --init --recursive"))
+                fputs("jbi: warning: submodule update failed; continuing\n",
+                      stderr);
+        return 0;
 }
