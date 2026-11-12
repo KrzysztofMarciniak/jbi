@@ -1,4 +1,6 @@
-# jbi — Just Build It
+# jbi (Just build it)
+
+![jbi commands](jbi.png)
 
 `jbi` is a small C99 command-line tool and library that detects a project's build
 system from marker files, ranks likely candidates using build commands mentioned
