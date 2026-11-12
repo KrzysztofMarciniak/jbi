@@ -1,0 +1,6 @@
+# build scripts
+files = build.sh make.sh compile.sh
+order = 10
+build = sh ./build.sh
+build = sh ./make.sh
+build = sh ./compile.sh

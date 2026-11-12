@@ -1,0 +1,5 @@
+*.o
+/jbi
+/libjbi.a
+/libjbi.so
+/libjbi.dylib

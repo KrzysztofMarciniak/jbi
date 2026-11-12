@@ -1,0 +1,6 @@
+files     = configure configure.ac configure.in
+order     = 30
+build     = ./configure && make
+build     = autoreconf -fi && ./configure && make
+install   = make install
+uninstall = make uninstall

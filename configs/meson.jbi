@@ -1,0 +1,6 @@
+files     = meson.build
+order     = 25
+build = meson setup build && meson compile -C build
+build = meson compile -C build
+install = meson install -C build
+uninstall = ninja -C build uninstall

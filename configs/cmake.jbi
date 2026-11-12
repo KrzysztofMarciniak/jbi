@@ -1,0 +1,5 @@
+files     = CMakeLists.txt
+order     = 20
+build     = cmake -S . -B build && cmake --build build
+install   = cmake --install build
+uninstall = xargs rm -f < build/install_manifest.txt

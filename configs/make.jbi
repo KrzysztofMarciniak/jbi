@@ -1,0 +1,6 @@
+files     = Makefile makefile GNUmakefile
+order     = 50
+build     = make
+build     = make build
+install   = make install
+uninstall = make uninstall
