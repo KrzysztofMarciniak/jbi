@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
                 jbi_close(c);
                 return 1;
         }
-        if (!c->ncfg && strcmp(cmd, "build") != 0) {
+        if (!c->ncfg && !strcmp(cmd, "list")) {
                 fprintf(
                     stderr,
                     "jbi: no .jbi configs found (looked in %s/.jbi and %s)\n",

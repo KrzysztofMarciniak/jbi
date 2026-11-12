@@ -87,6 +87,21 @@ Set `CC`, `CXX`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `AR`, and `TMPDIR` to customiz
 the automatic build. Add a `.jbi/NAME.jbi` file to support another build system or
 to customize a project's commands.
 
+## Autobuild install/uninstall
+
+After an autobuild succeeds, `jbi install` and `jbi uninstall` work for it too:
+
+![autobuild](autobuild.png)
+
+- executables go to `$BINDIR` (default `$PREFIX/bin`), libraries to `$LIBDIR`
+  (`$PREFIX/lib`), and library headers to `$INCDIR` (`$PREFIX/include`);
+- headers under `include/` keep their path (`include/foo/a.h` becomes
+  `INCDIR/foo/a.h`); a bare `include/a.h` or a top-level header goes to
+  `INCDIR/NAME/`, where NAME is the project directory name;
+- `DESTDIR` is honored, and installed files are recorded in
+  `.jbi/auto.installed`; `uninstall` removes exactly those (or, without the
+  record, `BINDIR/NAME`, `LIBDIR/libNAME.a` and `INCDIR/NAME`).
+
 ## Install
 
 ```sh

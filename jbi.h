@@ -42,6 +42,8 @@ int jbi_install(jbi_ctx* c);   /* 0 = success */
 int jbi_uninstall(jbi_ctx* c); /* 0 = success */
 void jbi_list_plan(jbi_ctx* c, FILE* out); /* ranked plan */
 int jbi_init_submodules(jbi_ctx* c);       /* 0 = success */
+int jbi_auto_install(jbi_ctx* c);   /* install autobuild output; 0 = success */
+int jbi_auto_uninstall(jbi_ctx* c); /* remove it again; 0 = success */
 
 #ifdef __cplusplus
 }

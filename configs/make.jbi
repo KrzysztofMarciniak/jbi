@@ -1,6 +1,6 @@
 files     = Makefile makefile GNUmakefile
 order     = 50
 build     = make
-build     = make build
+build     = test -e Makefile -o -e makefile -o -e GNUmakefile && make build
 install   = make install
 uninstall = make uninstall
